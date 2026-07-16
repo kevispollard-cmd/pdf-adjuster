@@ -36,13 +36,16 @@ import engine  # noqa: E402
 
 app = FastAPI(title="PDF Adjuster")
 
-MAX_UPLOAD = 4 * 1024 * 1024  # stay under serverless body limits
+IS_SERVERLESS = bool(os.environ.get("VERCEL"))
+MAX_UPLOAD = 4 * 1024 * 1024 if IS_SERVERLESS else 200 * 1024 * 1024
 
 
 def _check_size(*blobs: bytes):
     if sum(len(b) for b in blobs) > MAX_UPLOAD:
-        raise HTTPException(413, "Upload too large for the web version (max ~4 MB "
-                                 "per request). Use the local version for big files.")
+        msg = ("Upload too large for the web version (max ~4 MB per request). "
+               "Use the locally-run version for big files."
+               if IS_SERVERLESS else "Upload too large (max 200 MB).")
+        raise HTTPException(413, msg)
 
 
 def _previews(before: bytes, after: bytes, pages: list[int]) -> list[dict]:
@@ -66,6 +69,9 @@ def _parse_date(s: str) -> date:
 
 @app.get("/")
 def index():
+    local = ROOT / "public" / "index.html"
+    if not IS_SERVERLESS and local.exists():
+        return FileResponse(local)   # local dev: live file wins
     return HTMLResponse(_assets.UI_HTML)
 
 

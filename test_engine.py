@@ -1,6 +1,6 @@
 import sys, json
 from datetime import date
-# engine.py sits next to this file
+sys.path.insert(0, "app")
 import fitz
 import engine
 
@@ -141,6 +141,71 @@ check("diff last", engine.build_filename_stem(["Mario Puente", "Claudia Jamilett
 check("revised new", engine.revised_filename("Catario.Ochoa HOI Docs.pdf") == "Catario.Ochoa HOI Docs revised.pdf")
 check("revised bare -> 1", engine.revised_filename("X revised.pdf") == "X revised 1.pdf")
 check("revised 3 -> 4", engine.revised_filename("X revised 3.pdf") == "X revised 4.pdf")
+
+# ---------- 9. regressions ----------
+print("\n===== REGRESSIONS =====")
+check("Oliver: no false 2-loan warning", not An["Oliver"].warnings)
+check("Molina: no false 2-loan warning", not An["Molina"].warnings)
+check("Catario: 2-loan warning kept", any("Two loans" in w for w in An["Catario"].warnings))
+
+# same-line multi-target: both dates on ONE line must not double-print
+synth = fitz.open(); sp = synth.new_page()
+sp.insert_text((72, 100), "Policy period from 7/22/2026 to 7/22/2027 inclusive.", fontsize=11)
+sb = synth.tobytes()
+sd = fitz.open(stream=sb, filetype="pdf")
+plans = engine._plan_pairs(sd, [("7/22/2026", "12/1/2026"), ("7/22/2027", "12/1/2027")])
+engine._apply_replacements(sd, plans)
+st = sd[0].get_text()
+check("same-line: both dates replaced", "12/1/2026" in st and "12/1/2027" in st)
+check("same-line: no duplicated tail", st.count("inclusive") == 1)
+check("same-line: old dates gone", "7/22/2026" not in st and "7/22/2027" not in st)
+sd.close()
+
+# ---------- 10. smart paste ----------
+print("\n===== SMART PASTE =====")
+got = engine.normalize_mortgagee_lines(
+    "Kind Lending, LLC, c/o LoanCare, LLC ISAOA/ATIMA, PO Box 202049, Florence, SC 29502-2049")
+check("single-line paste splits correctly",
+      got == ["Kind Lending, LLC, c/o LoanCare, LLC,", "ISAOA/ATIMA",
+              "PO Box 202049", "Florence, SC 29502-2049"])
+check("structured input untouched",
+      engine.normalize_mortgagee_lines("A, LLC,\nISAOA\n1 Main St\nCity, TX 75000")
+      == ["A, LLC,", "ISAOA", "1 Main St", "City, TX 75000"])
+# end-to-end: single-line paste through change_mortgagee
+out, _, _ = engine.change_mortgagee(samples["Catario"],
+    ["Kind Lending, LLC, c/o LoanCare, LLC ISAOA/ATIMA, PO Box 202049, Florence, SC 29502-2049"],
+    "9988776655")
+d = fitz.open(stream=out, filetype="pdf"); t = "\n".join(p.get_text() for p in d)
+check("paste e2e: new lender in", "Kind Lending" in t and "Florence, SC 29502-2049" in t)
+check("paste e2e: old gone", "Union Home" not in t)
+check("paste e2e: 2nd loan intact", "1576119" in t)
+d.close()
+
+# ---------- 11. Castillo (Pacific Specialty binder template) ----------
+import os
+if os.path.exists("samples/Castillo.pdf"):
+    print("\n===== CASTILLO (binder) =====")
+    cb = open("samples/Castillo.pdf", "rb").read()
+    ca = engine.analyze(cb)
+    check("castillo insureds", ca.insureds == ["Oscar Reyes Castillo"])
+    check("castillo loan", ca.loan_number == "1526307871")
+    check("castillo no false 2-loan warning", not ca.warnings)
+    out, _, _ = engine.change_dates(cb, date(2026, 9, 1), date(2026, 7, 16))
+    d = fitz.open(stream=out, filetype="pdf"); t = "\n".join(p.get_text() for p in d)
+    check("castillo fused term string updated", "9/1/2026-9/1/2027" in t)
+    check("castillo old dates gone", "7/31/2026" not in t and "7/31/2027" not in t)
+    d.close()
+    out, _, _ = engine.change_mortgagee(cb,
+        ["Kind Lending, LLC, c/o LoanCare, LLC ISAOA/ATIMA, PO Box 202049, Florence, SC 29502-2049"],
+        "9988776655")
+    d = fitz.open(stream=out, filetype="pdf")
+    t1, t2 = d[0].get_text(), d[1].get_text()
+    check("castillo binder lender swapped", "Kind Lending" in t1 and "United Wholesale" not in t1)
+    check("castillo binder city present", "Florence, SC 29502-2049" in t1)
+    check("castillo binder loan swapped in place", "9988776655" in t1 and "1526307871" not in t1)
+    check("castillo binder labels intact", t1.count("Loan Number:") == 2)
+    check("castillo eoi swapped", "Kind Lending" in t2 and t2.count("9988776655") == 2)
+    d.close()
 
 print(f"\n===== {PASS} passed, {FAIL} failed =====")
 sys.exit(1 if FAIL else 0)

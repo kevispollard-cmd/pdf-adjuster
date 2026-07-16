@@ -210,16 +210,25 @@ class Replacement:
     fontfile: str | None = None
 
 
-def _plan_string_replacements(doc: fitz.Document, old: str, new: str,
-                              exclude_rects: dict[int, list[fitz.Rect]] | None = None,
-                              pages: list[int] | None = None) -> list[Replacement]:
-    """Plan replacing every visual occurrence of `old` with `new`."""
+def _plan_pairs(doc: fitz.Document, pairs: list[tuple[str, str]],
+                exclude_rects: dict[int, list[fitz.Rect]] | None = None,
+                pages: list[int] | None = None) -> list[Replacement]:
+    """Plan replacing every visual occurrence of each (old, new) pair.
+    All pairs are handled in ONE pass per line so that multiple targets on the
+    same visual line compose their width shifts instead of conflicting."""
     plans: list[Replacement] = []
-    if old == new or not old:
+    seen: set[str] = set()
+    clean: list[tuple[str, str]] = []
+    for o, n in pairs:
+        if o and o != n and o not in seen:
+            seen.add(o)
+            clean.append((o, n))
+    if not clean:
         return plans
     for pno in (pages if pages is not None else range(doc.page_count)):
         page = doc[pno]
-        if not page.search_for(old):
+        active = [(o, n) for o, n in clean if page.search_for(o)]
+        if not active:
             continue
         d = page.get_text("dict")
         for block in d["blocks"]:
@@ -227,7 +236,7 @@ def _plan_string_replacements(doc: fitz.Document, old: str, new: str,
                 continue
             for line in block["lines"]:
                 spans = line["spans"]
-                if not any(old in s["text"] for s in spans):
+                if not any(o in s["text"] for s in spans for o, _ in active):
                     continue
                 shift = 0.0
                 for s in spans:
@@ -239,14 +248,16 @@ def _plan_string_replacements(doc: fitz.Document, old: str, new: str,
                     size = s["size"]
                     color = int_color(s.get("color", 0))
                     ox, oy = s.get("origin", (srect.x0, srect.y1 - size * 0.22))
-                    if old in s["text"]:
-                        new_span = s["text"].replace(old, new)
-                        old_w = srect.x1 - srect.x0
-                        new_w = _measure(new_span.rstrip(), size, alias, ffile)
+                    new_span = s["text"]
+                    for o, n in active:
+                        if o in new_span:
+                            new_span = new_span.replace(o, n)
+                    if new_span != s["text"]:
                         plans.append(Replacement(pno, tuple(srect), new_span.rstrip(),
-                                                 size, alias, color, old,
+                                                 size, alias, color, s["text"],
                                                  (ox + shift, oy), ffile))
-                        shift += new_w - _measure(s["text"].rstrip(), size, alias, ffile)
+                        shift += (_measure(new_span.rstrip(), size, alias, ffile)
+                                  - _measure(s["text"].rstrip(), size, alias, ffile))
                     elif abs(shift) > 0.4:
                         # untouched span right of a width change: redraw shifted
                         plans.append(Replacement(pno, tuple(srect), s["text"].rstrip(),
@@ -254,34 +265,43 @@ def _plan_string_replacements(doc: fitz.Document, old: str, new: str,
                                                  (ox + shift, oy), ffile))
         # --- fallback: occurrences that wrap across lines (e.g. table cells) ---
         covered = [fitz.Rect(p.rect) for p in plans if p.page == pno]
-        leftovers = [r for r in page.search_for(old)
-                     if not any(r.intersects(c) for c in covered)
-                     and not (exclude_rects and any(
-                         r.intersects(x) for x in exclude_rects.get(pno, [])))]
-        for group in _group_wrapped_hits(leftovers):
-            first = group[0]
-            size, alias, ffile, color = 8.0, "helv", None, (0, 0, 0)
-            for s in iter_spans(page):
-                if fitz.Rect(s["bbox"]).intersects(first):
-                    size = s["size"]
-                    color = int_color(s.get("color", 0))
-                    alias, ffile = resolve_font(s["font"], s.get("flags", 0))
-                    break
-            max_w = max(r.x1 - r.x0 for r in group) + 4
-            lines = _wrap_text(new, max_w, size, alias, ffile)
-            lead = size * 1.22
-            for j, r in enumerate(group):       # redact every segment
-                plans.append(Replacement(pno, tuple(r),
-                                         lines[j] if j < len(lines) else "",
-                                         size, alias, color, old,
-                                         (r.x0, r.y1 - size * 0.22), ffile))
-            for j in range(len(group), len(lines)):  # extra wrapped lines
-                base = group[-1]
-                y = base.y1 + lead * (j - len(group) + 1)
-                plans.append(Replacement(pno, (base.x0, y - size, base.x1, y),
-                                         lines[j], size, alias, color, "",
-                                         (base.x0, y - size * 0.22), ffile))
+        for o, n in active:
+            leftovers = [r for r in page.search_for(o)
+                         if not any(r.intersects(c) for c in covered)
+                         and not (exclude_rects and any(
+                             r.intersects(x) for x in exclude_rects.get(pno, [])))]
+            for group in _group_wrapped_hits(leftovers):
+                first = group[0]
+                size, alias, ffile, color = 8.0, "helv", None, (0, 0, 0)
+                for s in iter_spans(page):
+                    if fitz.Rect(s["bbox"]).intersects(first):
+                        size = s["size"]
+                        color = int_color(s.get("color", 0))
+                        alias, ffile = resolve_font(s["font"], s.get("flags", 0))
+                        break
+                max_w = max(r.x1 - r.x0 for r in group) + 4
+                lines = _wrap_text(n, max_w, size, alias, ffile)
+                lead = size * 1.22
+                for j, r in enumerate(group):       # redact every segment
+                    plans.append(Replacement(pno, tuple(r),
+                                             lines[j] if j < len(lines) else "",
+                                             size, alias, color, o,
+                                             (r.x0, r.y1 - size * 0.22), ffile))
+                    covered.append(fitz.Rect(r))
+                for j in range(len(group), len(lines)):  # extra wrapped lines
+                    base = group[-1]
+                    y = base.y1 + lead * (j - len(group) + 1)
+                    plans.append(Replacement(pno, (base.x0, y - size, base.x1, y),
+                                             lines[j], size, alias, color, "",
+                                             (base.x0, y - size * 0.22), ffile))
     return plans
+
+
+def _plan_string_replacements(doc: fitz.Document, old: str, new: str,
+                              exclude_rects: dict[int, list[fitz.Rect]] | None = None,
+                              pages: list[int] | None = None) -> list[Replacement]:
+    """Plan replacing every visual occurrence of `old` with `new`."""
+    return _plan_pairs(doc, [(old, new)], exclude_rects, pages)
 
 
 def _group_wrapped_hits(rects: list[fitz.Rect]) -> list[list[fitz.Rect]]:
@@ -427,19 +447,18 @@ def _block_lines_after_label(page: fitz.Page, label: str, max_lines: int = 6,
 
 
 def _second_mortgage_zones(doc: fitz.Document) -> dict[int, list[fitz.Rect]]:
-    """Rects around any '2nd Mortgage' block — replacements must never touch these."""
+    """Rects around 2nd-mortgage areas — replacements must never touch these.
+    Two layout families: ACORD's '2nd Mortgage (if applicable):' block, and
+    binder-style '2nd Mortgagee:' column headings. A bare 'Loan Number:' label
+    elsewhere is NOT protected (binders label the 1st loan the same way)."""
     zones: dict[int, list[fitz.Rect]] = {}
     for pno in range(doc.page_count):
         page = doc[pno]
-        for s in find_spans(page, "2nd Mortgage"):
-            r = fitz.Rect(s["bbox"])
-            zones.setdefault(pno, []).append(
-                fitz.Rect(r.x0 - 5, r.y0 - 2, r.x0 + 280, r.y1 + 80))
-        # mixed-case 'Loan Number:' labels belong to 2nd-mortgage style blocks
-        for s in find_spans(page, "Loan Number:"):
-            r = fitz.Rect(s["bbox"])
-            zones.setdefault(pno, []).append(fitz.Rect(r.x0 - 5, r.y0 - 2,
-                                                       r.x1 + 120, r.y1 + 2))
+        for label, w, h in (("2nd Mortgage (if applicable):", 300, 95),
+                            ("2nd Mortgagee:", 280, 120)):
+            for r in page.search_for(label):
+                zones.setdefault(pno, []).append(
+                    fitz.Rect(r.x0 - 10, r.y0 - 2, r.x0 + w, r.y1 + h))
     return zones
 
 
@@ -469,9 +488,22 @@ def analyze(pdf_bytes: bytes) -> Analysis:
     if inv_idx is not None:
         lines = [l.strip() for l in texts[inv_idx].split("\n")]
         for j, l in enumerate(lines):
-            m = re.search(r"(?:First )?Named Insured:\s*(.+)", l)
+            m = re.search(r"(?:First )?Named Insured:\s*(.+)|Prepared for:\s*(.*)", l)
+            if m and not (m.group(1) or m.group(2) or "").strip() and m.group(2) is not None:
+                # label alone on its line (binder style): names on following lines
+                for k in range(j + 1, min(j + 3, len(lines))):
+                    nxt = lines[k]
+                    if (nxt and ":" not in nxt and not DATE_NUM_RE.search(nxt)
+                            and len(nxt.split()) in (2, 3, 4)
+                            and not any(c.isdigit() for c in nxt)):
+                        a.insureds.append(nxt)
+                    else:
+                        break
+                if a.insureds:
+                    break
+                continue
             if m:
-                a.insureds.append(m.group(1).strip())
+                a.insureds.append((m.group(1) or m.group(2)).strip())
                 # subsequent bare-name lines belong to co-borrowers
                 for k in range(j + 1, min(j + 3, len(lines))):
                     nxt = lines[k]
@@ -529,11 +561,15 @@ def analyze(pdf_bytes: bytes) -> Analysis:
         a.loan_number = v
         # second mortgage details (text-order extraction is reliable here)
         eoi_text = texts[a.page_kinds.index("eoi")]
-        m2b = re.search(r"2nd Mortgage \(if applicable\):\s*\n(.*?)(?:\nLoan Number|\nCANCELLATION)",
+        m2b = re.search(r"2nd Mortgage \(if applicable\):\s*\n(.*?)\nCANCELLATION",
                         eoi_text, re.S)
         if m2b:
-            a.second_mortgagee = [l.strip() for l in m2b.group(1).split("\n")
-                                  if l.strip()][:6]
+            # keep only real content — drop empty lines and bare field labels
+            # (an EOI with no 2nd mortgage still prints the empty labels)
+            a.second_mortgagee = [
+                l.strip() for l in m2b.group(1).split("\n")
+                if l.strip() and not re.fullmatch(
+                    r"Loan Number:?\s*|2nd Mortgage.*", l.strip())][:6]
         m2 = re.search(r"Loan Number:\s*(\d{4,12})", eoi_text)
         if m2:
             a.second_loan_number = m2.group(1)
@@ -570,20 +606,26 @@ def change_dates(pdf_bytes: bytes, new_effective: date,
     new_exp = new_effective + term
     new_printed = new_printed or date.today()
 
-    plans: list[Replacement] = []
+    pairs: list[tuple[str, str]] = []
     # effective + expiration: replace both numeric and long-form renderings
     for old_d, new_d in ((old_eff, new_effective), (old_exp, new_exp)):
-        plans += _plan_string_replacements(doc, fmt_num(old_d), fmt_num(new_d))
-        plans += _plan_string_replacements(doc, fmt_long(old_d), fmt_long(new_d))
+        pairs.append((fmt_num(old_d), fmt_num(new_d)))
+        pairs.append((fmt_long(old_d), fmt_long(new_d)))
     # printed date
     if a.printed_date:
         old_p = parse_num_date(a.printed_date)
         if old_p and old_p not in (old_eff, old_exp):
-            plans += _plan_string_replacements(doc, fmt_num(old_p), fmt_num(new_printed))
-            plans += _plan_string_replacements(doc, fmt_long(old_p), fmt_long(new_printed))
+            pairs.append((fmt_num(old_p), fmt_num(new_printed)))
+            pairs.append((fmt_long(old_p), fmt_long(new_printed)))
+        elif old_p in (old_eff, old_exp):
+            a.warnings.append("The printed date equals the effective/expiration "
+                              "date in this document, so it moves with it rather "
+                              "than to the chosen printed date. Check the preview.")
+    plans = _plan_pairs(doc, pairs)
 
     if not plans:
-        raise ValueError("No date occurrences found to replace.")
+        raise ValueError("Nothing to change — the new dates are the same as the "
+                         "current ones.")
     _apply_replacements(doc, plans)
     changed = sorted({p.page for p in plans})
     out = doc.tobytes(garbage=3, deflate=True)
@@ -601,10 +643,14 @@ def _find_mortgagee_instances(doc: fitz.Document, old_lines: list[str],
     the document wraps or columnizes it. Yields (page_no, clusters) where each
     cluster is a dict {rect, pos, style} — one per visual column of the block."""
     anchor = old_lines[0].rstrip(", ")
-    block_norm = _norm(" ".join(old_lines))
+    # strip ISAOA decorations so the search matches every rendering of the
+    # lender name ("X, LLC ISAOA/ATIMA" on a binder vs "X, LLC, ISAOA" on an EOI)
+    anchor_base = re.sub(r"[,\s]*\b(ISAOA.*|its successors.*)$", "",
+                         anchor, flags=re.I).strip(" ,") or anchor
+    block_norm = _norm(" ".join(old_lines)) + "isaoa atimaisaoaatima"
     for pno in range(doc.page_count):
         page = doc[pno]
-        hits = _group_wrapped_hits([r for r in page.search_for(anchor)
+        hits = _group_wrapped_hits([r for r in page.search_for(anchor_base)
                                     if not any(r.intersects(z)
                                                for z in zones.get(pno, []))])
         if not hits:
@@ -631,17 +677,24 @@ def _find_mortgagee_instances(doc: fitz.Document, old_lines: list[str],
                 intersects_anchor = any(lrect.intersects(g) for g in group)
                 same_col = abs(lrect.x0 - top.x0) <= 40
                 in_band = lrect.y0 - band_bottom < lead_limit * 2.2
+                # zip+4 tolerance: "City, ST 29502-2028" belongs to a block
+                # recorded as "City, ST 29502"
+                belongs = tn and (tn in block_norm or
+                                  (len(tn) >= 10 and tn[:-4] in block_norm))
                 if intersects_anchor:
                     members.append((lrect, tn, spans))
                     band_bottom = max(band_bottom, lrect.y1)
-                elif tn and tn in block_norm and in_band and (
+                elif belongs and in_band and (
                         same_col or len(tn) >= 6):
                     if any(lrect.intersects(z) for z in zones.get(pno, [])):
                         continue
                     members.append((lrect, tn, spans))
                     band_bottom = max(band_bottom, lrect.y1)
-                elif same_col and not tn and in_band and members:
-                    members.append((lrect, tn, spans))   # stray punctuation line
+                elif (same_col and in_band and members and not tn
+                      and text.strip() and (lrect.x1 - lrect.x0) < 25):
+                    # stray punctuation remnant (e.g. a lone comma) — but never
+                    # whitespace-only or wide lines, which would balloon the region
+                    members.append((lrect, tn, spans))
             # cluster members by x-column
             clusters: list[dict] = []
             for lrect, tn, spans in sorted(members, key=lambda m: m[0].x0):
@@ -649,6 +702,7 @@ def _find_mortgagee_instances(doc: fitz.Document, old_lines: list[str],
                 for c in clusters:
                     if abs(lrect.x0 - c["rect"].x0) <= 60:
                         c["rect"] |= lrect
+                        c["rects"].append(fitz.Rect(lrect))
                         c["pos"] = min(c["pos"],
                                        block_norm.find(tn) if tn else 10**6)
                         placed = True
@@ -656,10 +710,72 @@ def _find_mortgagee_instances(doc: fitz.Document, old_lines: list[str],
                 if not placed:
                     style = spans[0] if spans else None
                     clusters.append({"rect": fitz.Rect(lrect),
+                                     "rects": [fitz.Rect(lrect)],
                                      "pos": block_norm.find(tn) if tn else 10**6,
                                      "style": style})
+            member_rects = [m[0] for m in members]
+            for c in clusters:
+                nxt = None
+                for lrect, text, _ in page_lines:
+                    if (text.strip() and lrect.y0 > c["rect"].y1 - 2
+                            and lrect.x0 < c["rect"].x1 and lrect.x1 > c["rect"].x0
+                            and not any(abs(lrect.y0 - mr.y0) < 2 and
+                                        abs(lrect.x0 - mr.x0) < 2
+                                        for mr in member_rects)):
+                        nxt = lrect.y0
+                        break
+                c["free_below"] = max(0.0, (nxt - c["rect"].y1) if nxt else 200.0)
             clusters.sort(key=lambda c: c["pos"])
             yield pno, clusters
+
+
+ISAOA_RE = re.compile(
+    r",?\s*\b(ISAOA\s*/?\s*(?:ATIMA)?|ATIMA|its successors and/?or assigns)\b\.?,?",
+    re.I)
+CITY_ZIP_RE = re.compile(
+    r",?\s*([A-Za-z .'-]+,?\s*[A-Z]{2}[,.]?\s*\d{5}(?:-\d{4})?)\s*$")
+STREET_RE = re.compile(
+    r",?\s*((?:P\.?\s?O\.?\s?Box\s+[\w-]+|\d+\s+[^,]+?)"
+    r"(?:,\s*(?:Suite|Ste\.?|Unit|Apt\.?|Bldg\.?|#)\s*[\w-]+)?)\s*$", re.I)
+
+
+def normalize_mortgagee_lines(raw: str) -> list[str]:
+    """Accept a mortgagee pasted in any shape — structured lines OR one big
+    comma-run — and return clean block lines: name / ISAOA-ATIMA / street /
+    city-state-zip. Already-structured input (3+ lines) passes through."""
+    lines = [l.strip() for l in (raw or "").splitlines() if l.strip()]
+    if len(lines) >= 3:
+        return lines
+    text = re.sub(r"\s+", " ", " ".join(lines)).strip().strip(",")
+    if not text:
+        return []
+    city = street = isaoa = None
+    m = CITY_ZIP_RE.search(text)
+    if m:
+        city = m.group(1).strip(" ,")
+        text = text[:m.start()].strip(" ,")
+    m = STREET_RE.search(text)
+    if m:
+        street = m.group(1).strip(" ,")
+        text = text[:m.start()].strip(" ,")
+    m = ISAOA_RE.search(text)
+    if m:
+        token = m.group(1)
+        isaoa = ("ISAOA/ATIMA" if "atima" in token.lower()
+                 else "ISAOA" if "isaoa" in token.lower() else token)
+        text = (text[:m.start()] + " " + text[m.end():]).strip(" ,")
+        text = re.sub(r"\s+", " ", text).strip(" ,")
+    name = text.strip(" ,")
+    out = []
+    if name:
+        out.append(name if name.endswith(",") else name + ",")
+    if isaoa:
+        out.append(isaoa)
+    if street:
+        out.append(street)
+    if city:
+        out.append(city)
+    return out or lines
 
 
 def change_mortgagee(pdf_bytes: bytes, new_lines: list[str],
@@ -674,7 +790,9 @@ def change_mortgagee(pdf_bytes: bytes, new_lines: list[str],
     zones = _second_mortgage_zones(doc)
 
     old_lines = [l for l in a.mortgagee if l.strip()]
-    new_lines = [l.strip() for l in new_lines if l.strip()]
+    new_lines = normalize_mortgagee_lines("\n".join(new_lines))
+    if not new_lines:
+        raise ValueError("New mortgagee is empty after formatting.")
     changed: set[int] = set()
 
     # split the new block into name-part and address-part (for columnized tables)
@@ -696,9 +814,11 @@ def change_mortgagee(pdf_bytes: bytes, new_lines: list[str],
             assignments = [new_lines[:split_at], new_lines[split_at:]]
             for _ in range(len(clusters) - 2):
                 assignments.append([])
-        # redact all cluster regions first, then write
+        # redact the member lines only (a bounding box could swallow
+        # unrelated lines sitting inside it, e.g. a binder's loan-number row)
         for c in clusters:
-            page.add_redact_annot(c["rect"])
+            for r in c["rects"]:
+                page.add_redact_annot(r)
         try:
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
                                   graphics=fitz.PDF_REDACT_LINE_ART_NONE)
@@ -721,10 +841,20 @@ def change_mortgagee(pdf_bytes: bytes, new_lines: list[str],
             for nl in lines_for_c:
                 out_lines += _wrap_text(nl, max_w, size, alias, ffile)
             lead = size * 1.22
-            # shrink font if the new block is much taller than the old region
-            while size > 4.5 and len(out_lines) * lead > (region.y1 - region.y0) + lead * 1.5:
+            # vertical budget: the old block's rows plus whatever empty space
+            # sits below before the next line of real text (e.g. a binder's
+            # loan-number row must never be overwritten)
+            budget = (region.y1 - region.y0) + c.get("free_below", 200.0) - 1.5
+            def needed():
+                return (len(out_lines) - 1) * lead + size * 1.15
+            # 1) tighten line spacing a little            (invisible change)
+            while needed() > budget and lead > size * 1.04:
+                lead -= 0.25
+            # 2) shrink the font, at most 25%             (still readable)
+            floor = size * 0.75
+            while needed() > budget and size > floor:
                 size -= 0.25
-                lead = size * 1.22
+                lead = size * 1.1
                 out_lines = []
                 for nl in lines_for_c:
                     out_lines += _wrap_text(nl, max_w, size, alias, ffile)
