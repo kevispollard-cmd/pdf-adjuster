@@ -1,13 +1,12 @@
 {
   "functions": {
     "api/index.py": {
-      "includeFiles": "**",
+      "includeFiles": "{engine.py,fonts/**,public/**}",
       "memory": 1024,
       "maxDuration": 30
     }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index" },
-    { "source": "/", "destination": "/api/index" }
+    { "source": "/api/(.*)", "destination": "/api/index" }
   ]
 }

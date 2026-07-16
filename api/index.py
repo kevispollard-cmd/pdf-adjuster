@@ -50,7 +50,14 @@ def _parse_date(s: str) -> date:
 
 @app.get("/")
 def index():
-    return FileResponse(ROOT / "public" / "index.html")
+    # Local runs serve the UI from here; on Vercel the static file at
+    # public/index.html is served directly and this route is never hit.
+    for cand in (ROOT / "public" / "index.html",
+                 Path(__file__).resolve().parent / "public" / "index.html",
+                 Path("/var/task/public/index.html")):
+        if cand.exists():
+            return FileResponse(cand)
+    raise HTTPException(500, "index.html not found in bundle")
 
 
 @app.post("/api/analyze")
