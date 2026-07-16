@@ -12,9 +12,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _assets  # noqa: E402  (embedded UI + fonts)
+
+# Materialize bundled fonts to a writable dir if the fonts/ folder didn't
+# survive serverless bundling; engine reads PA_FONT_DIR before its default.
+import os  # noqa: E402
+if not (ROOT / "fonts").exists():
+    tmp_fonts = Path("/tmp/pa-fonts")
+    tmp_fonts.mkdir(parents=True, exist_ok=True)
+    import base64 as _b64
+    for name, data in _assets.FONTS.items():
+        f = tmp_fonts / name
+        if not f.exists():
+            f.write_bytes(_b64.b64decode(data))
+    os.environ["PA_FONT_DIR"] = str(tmp_fonts)
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse  # noqa: E402
 
 import engine  # noqa: E402
 
@@ -50,14 +66,7 @@ def _parse_date(s: str) -> date:
 
 @app.get("/")
 def index():
-    # Local runs serve the UI from here; on Vercel the static file at
-    # public/index.html is served directly and this route is never hit.
-    for cand in (ROOT / "public" / "index.html",
-                 Path(__file__).resolve().parent / "public" / "index.html",
-                 Path("/var/task/public/index.html")):
-        if cand.exists():
-            return FileResponse(cand)
-    raise HTTPException(500, "index.html not found in bundle")
+    return HTMLResponse(_assets.UI_HTML)
 
 
 @app.post("/api/analyze")

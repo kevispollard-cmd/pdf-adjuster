@@ -125,9 +125,10 @@ def span_style(span) -> dict:
 
 # ------------------------------------------------------- font resolution
 
+import os
 from pathlib import Path
 
-FONT_DIR = Path(__file__).parent / "fonts"
+FONT_DIR = Path(os.environ.get("PA_FONT_DIR", "") or Path(__file__).parent / "fonts")
 
 # family key -> bundled file stems per (bold, italic)
 _BUNDLED = {
