@@ -67,6 +67,10 @@ def fmt_num(d: date) -> str:
     return f"{d.month}/{d.day}/{d.year}"
 
 
+def fmt_num_padded(d: date) -> str:
+    return f"{d.month:02d}/{d.day:02d}/{d.year}"
+
+
 def fmt_long(d: date) -> str:
     return f"{MONTHS[d.month - 1]} {d.day}, {d.year}"
 
@@ -494,7 +498,7 @@ def analyze(pdf_bytes: bytes) -> Analysis:
                 for k in range(j + 1, min(j + 3, len(lines))):
                     nxt = lines[k]
                     if (nxt and ":" not in nxt and not DATE_NUM_RE.search(nxt)
-                            and len(nxt.split()) in (2, 3, 4)
+                            and 2 <= len(nxt.split()) <= 6
                             and not any(c.isdigit() for c in nxt)):
                         a.insureds.append(nxt)
                     else:
@@ -508,7 +512,7 @@ def analyze(pdf_bytes: bytes) -> Analysis:
                 for k in range(j + 1, min(j + 3, len(lines))):
                     nxt = lines[k]
                     if (nxt and ":" not in nxt and not DATE_NUM_RE.search(nxt)
-                            and len(nxt.split()) in (2, 3, 4)
+                            and 2 <= len(nxt.split()) <= 6
                             and not any(c.isdigit() for c in nxt)):
                         a.insureds.append(nxt)
                     else:
@@ -607,16 +611,23 @@ def change_dates(pdf_bytes: bytes, new_effective: date,
     new_printed = new_printed or date.today()
 
     pairs: list[tuple[str, str]] = []
-    # effective + expiration: replace both numeric and long-form renderings
-    for old_d, new_d in ((old_eff, new_effective), (old_exp, new_exp)):
+
+    def add_date_pairs(old_d: date, new_d: date):
+        # zero-padded first so "08/01/2026" is consumed before its unpadded
+        # substring "8/1/2026" could partially match inside it; new dates
+        # mirror whichever padding style each occurrence uses
+        pairs.append((fmt_num_padded(old_d), fmt_num_padded(new_d)))
         pairs.append((fmt_num(old_d), fmt_num(new_d)))
         pairs.append((fmt_long(old_d), fmt_long(new_d)))
+
+    # effective + expiration: replace all renderings
+    for old_d, new_d in ((old_eff, new_effective), (old_exp, new_exp)):
+        add_date_pairs(old_d, new_d)
     # printed date
     if a.printed_date:
         old_p = parse_num_date(a.printed_date)
         if old_p and old_p not in (old_eff, old_exp):
-            pairs.append((fmt_num(old_p), fmt_num(new_printed)))
-            pairs.append((fmt_long(old_p), fmt_long(new_printed)))
+            add_date_pairs(old_p, new_printed)
         elif old_p in (old_eff, old_exp):
             a.warnings.append("The printed date equals the effective/expiration "
                               "date in this document, so it moves with it rather "
@@ -714,6 +725,7 @@ def _find_mortgagee_instances(doc: fitz.Document, old_lines: list[str],
                                      "pos": block_norm.find(tn) if tn else 10**6,
                                      "style": style})
             member_rects = [m[0] for m in members]
+            page_right = page.rect.x1 - 24
             for c in clusters:
                 nxt = None
                 for lrect, text, _ in page_lines:
@@ -725,6 +737,20 @@ def _find_mortgagee_instances(doc: fitz.Document, old_lines: list[str],
                         nxt = lrect.y0
                         break
                 c["free_below"] = max(0.0, (nxt - c["rect"].y1) if nxt else 200.0)
+                # nearest text (or protected zone) to the right in the same band
+                right_limit = page_right
+                for lrect, text, _ in page_lines:
+                    if (text.strip() and lrect.x0 > c["rect"].x1 + 4
+                            and lrect.y0 < c["rect"].y1 and lrect.y1 > c["rect"].y0
+                            and not any(abs(lrect.y0 - mr.y0) < 2 and
+                                        abs(lrect.x0 - mr.x0) < 2
+                                        for mr in member_rects)):
+                        right_limit = min(right_limit, lrect.x0 - 8)
+                for z in zones.get(pno, []):
+                    if (z.x0 > c["rect"].x1 and z.y0 < c["rect"].y1
+                            and z.y1 > c["rect"].y0):
+                        right_limit = min(right_limit, z.x0 - 8)
+                c["max_right"] = max(right_limit, c["rect"].x1)
             clusters.sort(key=lambda c: c["pos"])
             yield pno, clusters
 
@@ -855,7 +881,9 @@ def change_mortgagee(pdf_bytes: bytes, new_lines: list[str],
                                             style_span.get("flags", 0))
             else:
                 size, color, alias, ffile = 7.0, (0, 0, 0), "helv", None
-            max_w = max(region.x1 - region.x0, 90)
+            region_w = region.x1 - region.x0
+            avail_right = c.get("max_right", region.x1) - region.x0
+            max_w = max(min(avail_right, region_w * 1.9), region_w, 90)
             out_lines: list[str] = []
             for nl in lines_for_c:
                 out_lines += _wrap_text(nl, max_w, size, alias, ffile)
