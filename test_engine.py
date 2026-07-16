@@ -205,6 +205,19 @@ if os.path.exists("samples/Castillo.pdf"):
     check("castillo binder loan swapped in place", "9988776655" in t1 and "1526307871" not in t1)
     check("castillo binder labels intact", t1.count("Loan Number:") == 2)
     check("castillo eoi swapped", "Kind Lending" in t2 and t2.count("9988776655") == 2)
+    # structure + size parity: inline ISAOA kept inline, font size unchanged
+    check("castillo inline ISAOA preserved",
+          "Kind Lending, LLC, c/o LoanCare, LLC ISAOA/ATIMA" in t1)
+    def _span_size(doc_, pno, needle):
+        for b_ in doc_[pno].get_text("dict")["blocks"]:
+            if b_.get("type") != 0: continue
+            for l_ in b_["lines"]:
+                for s_ in l_["spans"]:
+                    if needle in s_["text"]: return round(s_["size"], 2)
+    orig_d = fitz.open(stream=cb, filetype="pdf")
+    check("castillo font size parity",
+          _span_size(orig_d, 0, "United Wholesale") == _span_size(d, 0, "Kind Lending"))
+    orig_d.close()
     d.close()
 
 print(f"\n===== {PASS} passed, {FAIL} failed =====")

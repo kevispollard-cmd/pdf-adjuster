@@ -793,6 +793,25 @@ def change_mortgagee(pdf_bytes: bytes, new_lines: list[str],
     new_lines = normalize_mortgagee_lines("\n".join(new_lines))
     if not new_lines:
         raise ValueError("New mortgagee is empty after formatting.")
+
+    # Mirror the ORIGINAL block's structure so line count (and therefore font
+    # size and spacing) is preserved: if the document writes the ISAOA/ATIMA
+    # designation inline with the lender name, keep it inline; if it puts it
+    # on its own line, split it out.
+    def _is_isaoa_line(l: str) -> bool:
+        return bool(re.fullmatch(r"ISAOA\s*/?\s*(ATIMA)?\.?,?", l.strip(), re.I))
+    old_inline = bool(old_lines and ISAOA_RE.search(old_lines[0]))
+    if old_inline and len(new_lines) >= 2 and _is_isaoa_line(new_lines[1]):
+        new_lines = ([new_lines[0].rstrip(", ") + " " + new_lines[1].strip()]
+                     + new_lines[2:])
+    elif (not old_inline and new_lines and ISAOA_RE.search(new_lines[0])
+          and not (len(new_lines) >= 2 and _is_isaoa_line(new_lines[1]))):
+        m = ISAOA_RE.search(new_lines[0])
+        token = m.group(1)
+        name = (new_lines[0][:m.start()] + new_lines[0][m.end():]).strip(" ,")
+        isaoa = ("ISAOA/ATIMA" if "atima" in token.lower()
+                 else "ISAOA" if "isaoa" in token.lower() else token)
+        new_lines = [name + ",", isaoa] + new_lines[1:]
     changed: set[int] = set()
 
     # split the new block into name-part and address-part (for columnized tables)
