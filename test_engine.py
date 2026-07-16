@@ -1,0 +1,146 @@
+import sys, json
+from datetime import date
+# engine.py sits next to this file
+import fitz
+import engine
+
+PASS = FAIL = 0
+def check(name, ok):
+    global PASS, FAIL
+    print(("PASS " if ok else "FAIL ") + name)
+    PASS += ok; FAIL += (not ok)
+
+samples = {n: open(f"samples/{n}.pdf", "rb").read() for n in ("Oliver", "Molina", "Catario")}
+
+# ---------- 1. analyze ----------
+print("\n===== ANALYZE =====")
+An = {}
+for n, b in samples.items():
+    a = engine.analyze(b)
+    An[n] = a
+    print(f"\n{n}: template={a.template} kinds={a.page_kinds}")
+    print(f"  printed={a.printed_date} eff={a.effective_date} exp={a.expiration_date} term={a.term_months}mo")
+    print(f"  insureds={a.insureds}")
+    print(f"  mortgagee={a.mortgagee} loan={a.loan_number}")
+    print(f"  2nd={a.second_mortgagee} loan2={a.second_loan_number}")
+    print(f"  warnings={a.warnings}")
+
+check("Catario template", An["Catario"].template == "mercury-acord")
+check("Molina template", An["Molina"].template == "openly")
+check("Catario eff/exp", An["Catario"].effective_date == "7/22/2026" and An["Catario"].expiration_date == "7/22/2027")
+check("Catario term 12mo", An["Catario"].term_months == 12)
+check("Catario loan", An["Catario"].loan_number == "6012662")
+check("Catario 2nd loan", An["Catario"].second_loan_number == "1576119")
+check("Catario insureds", len(An["Catario"].insureds) == 2)
+check("Catario mortgagee has UHM", any("Union Home" in l for l in An["Catario"].mortgagee))
+check("Molina eff long", An["Molina"].effective_date == "July 17, 2026")
+check("Molina loan", An["Molina"].loan_number == "92546986")
+check("Molina insureds 2", len(An["Molina"].insureds) == 2)
+check("Oliver loan", An["Oliver"].loan_number == "1526310197")
+check("Oliver mortgagee UWM", any("United Wholesale" in l for l in An["Oliver"].mortgagee))
+
+# ---------- 2. date change: Catario (numeric, 12mo term) ----------
+print("\n===== DATE CHANGE: Catario =====")
+out, changed, _ = engine.change_dates(samples["Catario"], date(2026, 12, 1), date(2026, 7, 16))
+d = fitz.open(stream=out, filetype="pdf"); t = "\n".join(p.get_text() for p in d)
+check("eff 12/1/2026", "12/1/2026" in t)
+check("exp 12/1/2027 (term preserved)", "12/1/2027" in t)
+check("printed 7/16/2026", "7/16/2026" in t)
+check("old eff gone", "7/22/2026" not in t)
+check("old exp gone", "7/22/2027" not in t)
+check("old printed gone", "7/15/2026" not in t)
+check("RCE date untouched", "07/03/2026" in t)
+d.close()
+
+# ---------- 3. date change: Molina (long form) ----------
+print("\n===== DATE CHANGE: Molina =====")
+out, changed, _ = engine.change_dates(samples["Molina"], date(2026, 8, 30), date(2026, 7, 16))
+d = fitz.open(stream=out, filetype="pdf"); t = "\n".join(p.get_text() for p in d)
+check("eff August 30, 2026", "August 30, 2026" in t)
+check("exp August 30, 2027", "August 30, 2027" in t)
+check("printed 7/16/2026", "7/16/2026" in t)
+check("old eff gone", "July 17, 2026" not in t)
+check("old printed gone", "7/15/2026" not in t)
+d.close()
+
+# ---------- 4. 6-month term simulation ----------
+print("\n===== 6-MONTH TERM =====")
+# fabricate: take Catario, first change exp to 1/22/2027 (6mo), then run date change
+tmp = fitz.open(stream=samples["Catario"], filetype="pdf")
+import engine as E
+plans = E._plan_string_replacements(tmp, "7/22/2027", "1/22/2027")
+E._apply_replacements(tmp, plans)
+six = tmp.tobytes(); tmp.close()
+a6 = engine.analyze(six)
+check("term detected 6mo", a6.term_months == 6)
+out, _, _ = engine.change_dates(six, date(2026, 9, 10), date(2026, 7, 16))
+d = fitz.open(stream=out, filetype="pdf"); t = "\n".join(p.get_text() for p in d)
+check("6mo: eff 9/10/2026", "9/10/2026" in t)
+check("6mo: exp 3/10/2027", "3/10/2027" in t)
+d.close()
+
+# ---------- 5. mortgagee change: Catario (two loans!) ----------
+print("\n===== MORTGAGEE: Catario =====")
+new_block = ["Rocket Mortgage, LLC,", "ISAOA/ATIMA", "1050 Woodward Ave", "Detroit, MI 48226"]
+out, changed, _ = engine.change_mortgagee(samples["Catario"], new_block, "3487651290")
+d = fitz.open(stream=out, filetype="pdf")
+t1, t2 = d[0].get_text(), d[1].get_text()
+check("new mortgagee on invoice", "Rocket Mortgage" in t1)
+check("new mortgagee on EOI", "Rocket Mortgage" in t2)
+check("old gone everywhere", "Union Home" not in t1 + t2)
+check("new loan# (2 spots)", t2.count("3487651290") == 2)
+check("old loan# gone", "6012662" not in t1 + t2)
+check("2nd mortgagee intact", "California Housing Finance Agency" in t2)
+check("2nd loan intact", "1576119" in t2)
+d.close()
+
+# ---------- 6. mortgagee change: Molina (openly) ----------
+print("\n===== MORTGAGEE: Molina =====")
+out, changed, _ = engine.change_mortgagee(samples["Molina"],
+    ["NewRez LLC", "ISAOA/ATIMA", "PO Box 7050", "Troy, MI 48007"], "555123456")
+d = fitz.open(stream=out, filetype="pdf"); t = "\n".join(p.get_text() for p in d)
+check("new lender present", "NewRez" in t)
+check("old lender gone", "American Financial" not in t)
+check("new loan present", "555123456" in t)
+check("old loan gone", "92546986" not in t)
+d.close()
+
+# ---------- 7. merge + naming ----------
+print("\n===== MERGE =====")
+def split(name, ranges):
+    src = fitz.open(stream=samples[name], filetype="pdf")
+    parts = []
+    for i, (a, b) in enumerate(ranges):
+        d = fitz.open(); d.insert_pdf(src, from_page=a, to_page=b)
+        parts.append((f"part{i}.pdf", d.tobytes())); d.close()
+    src.close(); return parts
+
+# Catario: invoice p1, EOI p2, RCE p3-4 — feed shuffled
+parts = split("Catario", [(2, 3), (0, 0), (1, 1)])  # RCE, Invoice, EOI
+merged, stem, info = engine.merge(parts)
+print("  order:", [i["kind"] for i in info], "stem:", stem)
+check("order Invoice,EOI,RCE", [i["kind"] for i in info] == ["invoice", "eoi", "rce"])
+check("stem Catario.Ochoa", stem == "Catario.Ochoa")
+
+parts = split("Molina", [(7, 7), (1, 6), (0, 0)])  # RCE, Dec, Invoice
+merged, stem, info = engine.merge(parts)
+print("  order:", [i["kind"] for i in info], "stem:", stem)
+check("order Invoice,Dec,RCE", [i["kind"] for i in info] == ["invoice", "dec", "rce"])
+check("stem Molina.Puente", stem == "Molina.Puente")
+
+parts = split("Oliver", [(1, 1), (2, 3), (0, 0)])
+merged, stem, info = engine.merge(parts)
+print("  order:", [i["kind"] for i in info], "stem:", stem)
+check("stem Oliver_Dale.Michelle", stem == "Oliver_Dale.Michelle")
+
+# ---------- 8. naming rules ----------
+print("\n===== NAMING =====")
+check("single borrower", engine.build_filename_stem(["Faith M Catario"]) == "Catario_Faith")
+check("same last", engine.build_filename_stem(["Dale Leroy Oliver", "Michelle Oliver"]) == "Oliver_Dale.Michelle")
+check("diff last", engine.build_filename_stem(["Mario Puente", "Claudia Jamilett Molina"]) == "Molina.Puente")
+check("revised new", engine.revised_filename("Catario.Ochoa HOI Docs.pdf") == "Catario.Ochoa HOI Docs revised.pdf")
+check("revised bare -> 1", engine.revised_filename("X revised.pdf") == "X revised 1.pdf")
+check("revised 3 -> 4", engine.revised_filename("X revised 3.pdf") == "X revised 4.pdf")
+
+print(f"\n===== {PASS} passed, {FAIL} failed =====")
+sys.exit(1 if FAIL else 0)

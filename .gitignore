@@ -1,0 +1,9 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+samples/
+*.pdf
+nohup.out
+.vercel/
+static/

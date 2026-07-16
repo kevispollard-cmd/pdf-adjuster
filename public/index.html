@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF Adjuster</title>
+<style>
+  :root{
+    --green:#1e7a3c; --green-dark:#155c2c; --ink:#1c2430; --muted:#66707d;
+    --bg:#f4f6f8; --card:#ffffff; --line:#e2e7ec; --warn-bg:#fff7e6; --warn-line:#e6c26e;
+    --err-bg:#fdecec; --err-line:#e08a8a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:var(--card);border-bottom:1px solid var(--line);padding:14px 28px;display:flex;align-items:center;gap:12px}
+  header .logo{width:34px;height:34px;border-radius:8px;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px}
+  header h1{font-size:17px;margin:0;font-weight:650}
+  header span{color:var(--muted);font-size:13px}
+  .wrap{max-width:1060px;margin:26px auto;padding:0 20px}
+  .tabs{display:flex;gap:8px;margin-bottom:18px}
+  .tab{padding:10px 18px;border:1px solid var(--line);border-radius:10px;background:var(--card);cursor:pointer;font-size:14px;font-weight:600;color:var(--muted)}
+  .tab.active{background:var(--green);border-color:var(--green);color:#fff}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:16px}
+  .drop{border:2px dashed #c3ccd6;border-radius:12px;padding:34px;text-align:center;color:var(--muted);cursor:pointer;transition:.15s}
+  .drop.hover{border-color:var(--green);background:#f0f8f2;color:var(--green-dark)}
+  .drop b{color:var(--ink)}
+  .hidden{display:none !important}
+  label{display:block;font-size:12.5px;font-weight:650;color:var(--muted);margin:14px 0 4px}
+  input[type=date],input[type=text],textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-size:14px;font-family:inherit}
+  textarea{min-height:96px;resize:vertical}
+  .row{display:flex;gap:16px;flex-wrap:wrap}
+  .row>div{flex:1;min-width:220px}
+  .btn{background:var(--green);color:#fff;border:none;border-radius:9px;padding:11px 22px;font-size:14.5px;font-weight:650;cursor:pointer;margin-top:16px}
+  .btn:hover{background:var(--green-dark)}
+  .btn:disabled{background:#a9b4bf;cursor:default}
+  .btn.secondary{background:#fff;color:var(--green);border:1px solid var(--green)}
+  .kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13.5px;margin-top:6px}
+  .kv dt{color:var(--muted);font-weight:600}
+  .kv dd{margin:0;white-space:pre-line}
+  .pill{display:inline-block;background:#eef4ee;border:1px solid #cfe3d2;color:var(--green-dark);border-radius:999px;padding:2px 10px;font-size:12px;font-weight:650;margin-left:8px}
+  .warn{background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:9px;padding:10px 14px;font-size:13.5px;margin-top:12px}
+  .error{background:var(--err-bg);border:1px solid var(--err-line);border-radius:9px;padding:10px 14px;font-size:13.5px;margin-top:12px}
+  .previews{margin-top:8px}
+  .pv-pair{margin-top:14px}
+  .pv-pair h4{margin:0 0 6px;font-size:13px;color:var(--muted)}
+  .pv-cols{display:flex;gap:12px}
+  .pv-cols figure{flex:1;margin:0}
+  .pv-cols figcaption{font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:650}
+  .pv-cols img{width:100%;border:1px solid var(--line);border-radius:8px}
+  .filebar{display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap}
+  .filebar input{flex:1;min-width:260px}
+  .list{font-size:13.5px;margin-top:10px}
+  .list li{margin:3px 0}
+  .spin{display:inline-block;width:16px;height:16px;border:2.5px solid #cdd6de;border-top-color:var(--green);border-radius:50%;animation:r .7s linear infinite;vertical-align:-3px;margin-right:8px}
+  @keyframes r{to{transform:rotate(360deg)}}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin:24px 0}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">PA</div>
+  <div><h1>PDF Adjuster</h1><span>Internal policy-document tool — dates · merge · mortgagee</span></div>
+</header>
+
+<div class="wrap">
+  <div class="tabs">
+    <div class="tab active" data-tab="dates">1 · Effective Date</div>
+    <div class="tab" data-tab="merge">2 · Combine &amp; Name</div>
+    <div class="tab" data-tab="mortgagee">3 · Mortgagee / Loan #</div>
+  </div>
+
+  <!-- ============ DATES ============ -->
+  <section id="pane-dates">
+    <div class="card">
+      <div class="drop" id="drop-dates"><b>Drop one or more policy PDFs here</b><br>or click to choose files — you'll be walked through them one at a time</div>
+      <input type="file" id="file-dates" accept="application/pdf" multiple class="hidden">
+      <div id="queue-dates" class="hidden" style="margin-top:12px;font-size:13.5px;font-weight:650;color:var(--green-dark)"></div>
+      <div id="an-dates" class="hidden">
+        <dl class="kv" id="kv-dates"></dl>
+        <div id="warn-dates"></div>
+        <div class="row">
+          <div><label>New effective date</label><input type="date" id="new-eff"></div>
+          <div><label>New printed date (defaults to today)</label><input type="date" id="new-printed"></div>
+        </div>
+        <button class="btn" id="go-dates">Preview changes</button>
+      </div>
+      <div id="err-dates"></div>
+    </div>
+    <div class="card hidden" id="result-dates"></div>
+  </section>
+
+  <!-- ============ MERGE ============ -->
+  <section id="pane-merge" class="hidden">
+    <div class="card">
+      <div class="drop" id="drop-merge"><b>Drop the Invoice, EOI/Declarations and RCE PDFs here</b><br>(2 or more files — order doesn't matter, they'll be arranged automatically)</div>
+      <input type="file" id="file-merge" accept="application/pdf" multiple class="hidden">
+      <ul class="list" id="list-merge"></ul>
+      <button class="btn hidden" id="go-merge">Combine PDFs</button>
+      <div id="err-merge"></div>
+    </div>
+    <div class="card hidden" id="result-merge"></div>
+  </section>
+
+  <!-- ============ MORTGAGEE ============ -->
+  <section id="pane-mortgagee" class="hidden">
+    <div class="card">
+      <div class="drop" id="drop-mort"><b>Drop the policy PDF here</b><br>or click to choose a file</div>
+      <input type="file" id="file-mort" accept="application/pdf" class="hidden">
+      <div id="an-mort" class="hidden">
+        <dl class="kv" id="kv-mort"></dl>
+        <div id="warn-mort"></div>
+        <div class="row">
+          <div>
+            <label>New mortgagee (name + address, one line each — include ISAOA/ATIMA line)</label>
+            <textarea id="new-mort" placeholder="Lender Name, LLC&#10;ISAOA/ATIMA&#10;PO Box 12345&#10;City, ST 00000"></textarea>
+          </div>
+          <div>
+            <label>New loan number</label>
+            <input type="text" id="new-loan" placeholder="e.g. 3487651290">
+          </div>
+        </div>
+        <button class="btn" id="go-mort">Preview changes</button>
+      </div>
+      <div id="err-mort"></div>
+    </div>
+    <div class="card hidden" id="result-mort"></div>
+  </section>
+
+  <footer>Documents are processed in memory only and never stored. Always review the preview before downloading.</footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = {dates:{queue:[], idx:0, file:null}, mort:{file:null}, merge:{files:[]}};
+
+/* ---------- tabs ---------- */
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x===t));
+  ['dates','merge','mortgagee'].forEach(p => $('pane-'+p).classList.toggle('hidden', t.dataset.tab!==p));
+});
+
+/* ---------- helpers ---------- */
+function wireDrop(dropId, inputId, onFiles){
+  const d=$(dropId), i=$(inputId);
+  d.onclick=()=>i.click();
+  d.ondragover=e=>{e.preventDefault();d.classList.add('hover');};
+  d.ondragleave=()=>d.classList.remove('hover');
+  d.ondrop=e=>{e.preventDefault();d.classList.remove('hover');onFiles([...e.dataTransfer.files].filter(f=>f.name.toLowerCase().endsWith('.pdf')));};
+  i.onchange=()=>onFiles([...i.files]);
+}
+function busy(btn,on,label){btn.disabled=on;btn.innerHTML=on?'<span class="spin"></span>Working…':label;}
+function errBox(el,msg){el.innerHTML=msg?`<div class="error">${msg}</div>`:'';}
+function warnBox(el,warnings){el.innerHTML=(warnings||[]).map(w=>`<div class="warn">⚠️ ${w}</div>`).join('');}
+async function analyzeFile(file){
+  const fd=new FormData();fd.append('file',file);
+  const r=await fetch('/api/analyze',{method:'POST',body:fd});
+  if(!r.ok)throw new Error((await r.json()).detail||'Analyze failed');
+  return r.json();
+}
+function kvHTML(rows){return rows.filter(r=>r[1]).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('');}
+const PDFS={};let pdfSeq=0;
+function stashPdf(b64){PDFS[++pdfSeq]=b64;return pdfSeq;}
+function resultHTML(res){
+  const id=stashPdf(res.pdf);
+  const pv=(res.previews||[]).map(p=>`
+    <div class="pv-pair"><h4>Page ${p.page}</h4>
+      <div class="pv-cols">
+        <figure><figcaption>BEFORE</figcaption><img src="data:image/png;base64,${p.before}"></figure>
+        <figure><figcaption>AFTER</figcaption><img src="data:image/png;base64,${p.after}"></figure>
+      </div></div>`).join('');
+  return `<h3 style="margin:0">Review, then download<span class="pill">${(res.previews||[]).length} page(s) changed</span></h3>
+    <div class="previews">${pv}</div>
+    <div class="filebar">
+      <input type="text" id="fname-${id}" value="${res.filename}">
+      <button class="btn" style="margin:0" onclick="doDownload(${id})">Download</button>
+    </div>`;
+}
+function doDownload(id){
+  let name=($('fname-'+id).value||'document').trim();
+  if(!name.toLowerCase().endsWith('.pdf'))name+='.pdf';
+  const bytes=Uint8Array.from(atob(PDFS[id]),c=>c.charCodeAt(0));
+  const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'}));
+  const a=document.createElement('a');a.href=url;a.download=name;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
+
+/* ---------- DATES (batch queue) ---------- */
+const DROP_DATES_DEFAULT='<b>Drop one or more policy PDFs here</b><br>or click to choose files — you\'ll be walked through them one at a time';
+
+function updateQueueBadge(){
+  const q=state.dates.queue, i=state.dates.idx;
+  if(q.length>1){
+    $('queue-dates').textContent=`File ${i+1} of ${q.length}: ${q[i].name}`;
+    $('queue-dates').classList.remove('hidden');
+  }else $('queue-dates').classList.add('hidden');
+}
+
+async function loadDatesFile(){
+  const q=state.dates.queue, i=state.dates.idx;
+  if(i>=q.length){ // queue finished
+    state.dates.file=null;state.dates.queue=[];state.dates.idx=0;
+    $('an-dates').classList.add('hidden');$('result-dates').classList.add('hidden');
+    $('queue-dates').classList.add('hidden');
+    $('drop-dates').innerHTML='<b>All files done ✔</b><br>drop more PDFs to start a new batch';
+    return;
+  }
+  const f=q[i];state.dates.file=f;
+  errBox($('err-dates'),'');$('result-dates').classList.add('hidden');
+  updateQueueBadge();
+  $('drop-dates').innerHTML='<span class="spin"></span>Reading '+f.name+' …';
+  try{
+    const a=await analyzeFile(f);
+    $('drop-dates').innerHTML='<b>'+f.name+'</b><br>drop new files to start over';
+    $('kv-dates').innerHTML=kvHTML([
+      ['Template',a.template],['Printed date',a.printed_date],
+      ['Effective date',a.effective_date],['Expiration date',a.expiration_date],
+      ['Policy term',a.term_months?a.term_months+' months (preserved on change)':null],
+      ['Named insured(s)',(a.insureds||[]).join('\n')]]);
+    warnBox($('warn-dates'),a.warnings);
+    $('new-eff').value='';
+    $('new-printed').value=new Date().toISOString().slice(0,10);
+    $('an-dates').classList.remove('hidden');
+    $('new-eff').focus();
+  }catch(e){
+    errBox($('err-dates'),`${f.name}: ${e.message}`);
+    $('drop-dates').innerHTML='<b>'+f.name+'</b> — could not read';
+    // offer to continue with the rest of the queue
+    if(state.dates.queue.length>1) addSkipButton();
+  }
+}
+function addSkipButton(){
+  if(!$('skip-dates')){
+    const b=document.createElement('button');
+    b.id='skip-dates';b.className='btn secondary';b.textContent='Skip this file →';
+    b.onclick=()=>{b.remove();state.dates.idx++;loadDatesFile();};
+    $('err-dates').after(b);
+  }
+}
+wireDrop('drop-dates','file-dates',files=>{
+  if(!files.length)return;
+  state.dates.queue=files;state.dates.idx=0;
+  const s=$('skip-dates');if(s)s.remove();
+  loadDatesFile();
+});
+$('go-dates').onclick=async()=>{
+  if(!state.dates.file||!$('new-eff').value)return errBox($('err-dates'),'Pick a new effective date first.');
+  busy($('go-dates'),true,'Preview changes');errBox($('err-dates'),'');
+  try{
+    const fd=new FormData();
+    fd.append('file',state.dates.file);
+    fd.append('new_effective',$('new-eff').value);
+    fd.append('new_printed',$('new-printed').value||'');
+    const r=await fetch('/api/edit-dates',{method:'POST',body:fd});
+    if(!r.ok)throw new Error((await r.json()).detail);
+    const res=await r.json();
+    const more=state.dates.idx<state.dates.queue.length-1;
+    $('result-dates').innerHTML=resultHTML(res)+(state.dates.queue.length>1?
+      `<button class="btn secondary" style="margin-top:12px" onclick="state.dates.idx++;loadDatesFile();window.scrollTo({top:0,behavior:'smooth'})">${more?'Next file →':'Finish batch ✔'}</button>`:'');
+    warnBox($('warn-dates'),res.warnings);
+    $('result-dates').classList.remove('hidden');
+    $('result-dates').scrollIntoView({behavior:'smooth'});
+  }catch(e){errBox($('err-dates'),e.message);}
+  busy($('go-dates'),false,'Preview changes');
+};
+
+/* ---------- MERGE ---------- */
+wireDrop('drop-merge','file-merge',files=>{
+  if(!files.length)return;
+  state.merge.files=state.merge.files.concat(files);
+  $('list-merge').innerHTML=state.merge.files.map(f=>'<li>📄 '+f.name+'</li>').join('');
+  $('go-merge').classList.toggle('hidden',state.merge.files.length<2);
+  errBox($('err-merge'),'');
+});
+$('go-merge').onclick=async()=>{
+  busy($('go-merge'),true,'Combine PDFs');errBox($('err-merge'),'');
+  try{
+    const fd=new FormData();
+    state.merge.files.forEach(f=>fd.append('files',f));
+    const r=await fetch('/api/merge',{method:'POST',body:fd});
+    if(!r.ok)throw new Error((await r.json()).detail);
+    const res=await r.json();
+    const mid=stashPdf(res.pdf);
+    const order=res.order.map((o,i)=>`<li>${i+1}. <b>${o.kind.toUpperCase()}</b> — ${o.name} (${o.pages} pg)</li>`).join('');
+    $('result-merge').innerHTML=`<h3 style="margin:0">Combined<span class="pill">${res.order.length} files</span></h3>
+      <ul class="list">${order}</ul>
+      ${res.first_page?`<div class="pv-cols" style="max-width:330px"><figure><figcaption>FIRST PAGE</figcaption><img src="data:image/png;base64,${res.first_page}"></figure></div>`:''}
+      <div class="filebar">
+        <input type="text" id="fname-${mid}" value="${res.filename}">
+        <button class="btn" style="margin:0" onclick="doDownload(${mid})">Download</button>
+        <button class="btn secondary" style="margin:0" onclick="resetMerge()">Start over</button>
+      </div>`;
+    $('result-merge').classList.remove('hidden');
+  }catch(e){errBox($('err-merge'),e.message);}
+  busy($('go-merge'),false,'Combine PDFs');
+};
+function resetMerge(){state.merge.files=[];$('list-merge').innerHTML='';$('go-merge').classList.add('hidden');$('result-merge').classList.add('hidden');}
+
+/* ---------- MORTGAGEE ---------- */
+wireDrop('drop-mort','file-mort',async files=>{
+  if(!files.length)return;
+  state.mort.file=files[0];errBox($('err-mort'),'');$('result-mort').classList.add('hidden');
+  $('drop-mort').innerHTML='<span class="spin"></span>Reading '+files[0].name+' …';
+  try{
+    const a=await analyzeFile(files[0]);
+    $('drop-mort').innerHTML='<b>'+files[0].name+'</b><br>drop another file to start over';
+    $('kv-mort').innerHTML=kvHTML([
+      ['Template',a.template],
+      ['Current mortgagee (1st loan)',(a.mortgagee||[]).join('\n')],
+      ['Current loan #',a.loan_number],
+      ['2nd mortgagee (protected)',(a.second_mortgagee||[]).join('\n')],
+      ['2nd loan # (protected)',a.second_loan_number]]);
+    warnBox($('warn-mort'),a.warnings);
+    $('an-mort').classList.remove('hidden');
+  }catch(e){ $('drop-mort').innerHTML='<b>Drop the policy PDF here</b><br>or click to choose a file'; errBox($('err-mort'),e.message);}
+});
+$('go-mort').onclick=async()=>{
+  if(!state.mort.file)return;
+  if(!$('new-mort').value.trim()||!$('new-loan').value.trim())
+    return errBox($('err-mort'),'Enter the new mortgagee block and loan number.');
+  busy($('go-mort'),true,'Preview changes');errBox($('err-mort'),'');
+  try{
+    const fd=new FormData();
+    fd.append('file',state.mort.file);
+    fd.append('new_block',$('new-mort').value);
+    fd.append('new_loan',$('new-loan').value);
+    const r=await fetch('/api/edit-mortgagee',{method:'POST',body:fd});
+    if(!r.ok)throw new Error((await r.json()).detail);
+    const res=await r.json();
+    $('result-mort').innerHTML=resultHTML(res);
+    warnBox($('warn-mort'),res.warnings);
+    $('result-mort').classList.remove('hidden');
+    $('result-mort').scrollIntoView({behavior:'smooth'});
+  }catch(e){errBox($('err-mort'),e.message);}
+  busy($('go-mort'),false,'Preview changes');
+};
+</script>
+</body>
+</html>
